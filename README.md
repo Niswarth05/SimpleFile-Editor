@@ -1,4 +1,3 @@
-# SimpleFile-Editor
 # Simple File Editor
 
 A simple command-line line editor written in C.
