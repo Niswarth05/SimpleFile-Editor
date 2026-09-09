@@ -2,1247 +2,307 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
-
+#include <ctype.h>
 #include "infra.h"
 
-
-/* =========================================================
-   INTERNAL HELPER FUNCTIONS
-   ========================================================= */
-
-static int increase_capacity(Document *document)
-{
-    char **temporary;
-    int new_capacity;
-
-    new_capacity = document->capacity * 2;
-
-    temporary = realloc(
-        document->lines,
-        sizeof(char *) * new_capacity
-    );
-
-    if (temporary == NULL) {
-        return -1;
-    }
-
-    document->lines = temporary;
-    document->capacity = new_capacity;
-
+static int increase_capacity(Document *doc) {
+    int new_cap = doc->capacity * 2;
+    char **temp = realloc(doc->lines, sizeof(char *) * new_cap);
+    if (!temp) return -1;
+    doc->lines = temp;
+    doc->capacity = new_cap;
     return 0;
 }
 
-
-static void remove_newline(char *text)
-{
+static void remove_newline(char *text) {
     text[strcspn(text, "\n")] = '\0';
 }
 
-
-static void free_lines(char **lines, int line_count)
-{
-    int i;
-
-    if (lines == NULL) {
-        return;
-    }
-
-    for (i = 0; i < line_count; i++) {
-        free(lines[i]);
-    }
-
+static void free_lines(char **lines, int line_count) {
+    if (!lines) return;
+    for (int i = 0; i < line_count; i++) free(lines[i]);
     free(lines);
 }
 
-
-static void clear_undo_state_internal(Document *document)
-{
-    free_lines(
-        document->undo_lines,
-        document->undo_line_count
-    );
-
-    document->undo_lines = NULL;
-    document->undo_line_count = 0;
-    document->undo_capacity = 0;
-    document->has_undo = 0;
+void clear_undo_state(Document *doc) {
+    free_lines(doc->undo_lines, doc->undo_line_count);
+    doc->undo_lines = NULL;
+    doc->undo_line_count = doc->undo_capacity = doc->has_undo = 0;
 }
 
-
-/* =========================================================
-   INITIALIZATION
-   ========================================================= */
-
-void initialize_editor(Document *document)
-{
-    document->lines = malloc(
-        sizeof(char *) * INITIAL_CAPACITY
-    );
-
-    if (document->lines == NULL) {
+void initialize_editor(Document *doc) {
+    doc->lines = malloc(sizeof(char *) * INITIAL_CAPACITY);
+    if (!doc->lines) {
         printf("Error: Memory allocation failed.\n");
         exit(EXIT_FAILURE);
     }
-
-    document->line_count = 0;
-    document->capacity = INITIAL_CAPACITY;
-
-    document->filename[0] = '\0';
-
-    document->undo_lines = NULL;
-    document->undo_line_count = 0;
-    document->undo_capacity = 0;
-    document->has_undo = 0;
+    doc->line_count = 0;
+    doc->capacity = INITIAL_CAPACITY;
+    doc->filename[0] = '\0';
+    doc->undo_lines = NULL;
+    doc->undo_line_count = doc->undo_capacity = doc->has_undo = 0;
 }
 
+int save_undo_state(Document *doc) {
+    clear_undo_state(doc);
+    int snap_cap = doc->capacity < INITIAL_CAPACITY ? INITIAL_CAPACITY : doc->capacity;
+    char **snapshot = malloc(sizeof(char *) * snap_cap);
+    if (!snapshot) return -1;
 
-/* =========================================================
-   UNDO
-   ========================================================= */
-
-void clear_undo_state(Document *document)
-{
-    clear_undo_state_internal(document);
-}
-
-
-int save_undo_state(Document *document)
-{
-    char **snapshot;
-    int snapshot_capacity;
-    int i;
-
-    clear_undo_state_internal(document);
-
-    snapshot_capacity = document->capacity;
-
-    if (snapshot_capacity < INITIAL_CAPACITY) {
-        snapshot_capacity = INITIAL_CAPACITY;
-    }
-
-    snapshot = malloc(
-        sizeof(char *) * snapshot_capacity
-    );
-
-    if (snapshot == NULL) {
-        return -1;
-    }
-
-    for (i = 0; i < document->line_count; i++) {
-        size_t length;
-
-        length = strlen(document->lines[i]);
-
-        snapshot[i] = malloc(length + 1);
-
-        if (snapshot[i] == NULL) {
+    for (int i = 0; i < doc->line_count; i++) {
+        snapshot[i] = malloc(strlen(doc->lines[i]) + 1);
+        if (!snapshot[i]) {
             free_lines(snapshot, i);
             return -1;
         }
-
-        strcpy(
-            snapshot[i],
-            document->lines[i]
-        );
+        strcpy(snapshot[i], doc->lines[i]);
     }
+    for (int i = doc->line_count; i < snap_cap; i++) snapshot[i] = NULL;
 
-    for (i = document->line_count;
-         i < snapshot_capacity;
-         i++) {
-
-        snapshot[i] = NULL;
-    }
-
-    document->undo_lines = snapshot;
-    document->undo_line_count = document->line_count;
-    document->undo_capacity = snapshot_capacity;
-    document->has_undo = 1;
-
+    doc->undo_lines = snapshot;
+    doc->undo_line_count = doc->line_count;
+    doc->undo_capacity = snap_cap;
+    doc->has_undo = 1;
     return 0;
 }
 
+int undo_last_action(Document *doc) {
+    if (!doc->has_undo) return -1;
+    char **curr_lines = doc->lines;
+    int curr_count = doc->line_count;
 
-int undo_last_action(Document *document)
-{
-    char **current_lines;
-    int current_line_count;
+    doc->lines = doc->undo_lines;
+    doc->line_count = doc->undo_line_count;
+    doc->capacity = doc->undo_capacity;
 
-    if (!document->has_undo) {
-        return -1;
-    }
-
-    current_lines = document->lines;
-    current_line_count = document->line_count;
-
-    document->lines = document->undo_lines;
-    document->line_count = document->undo_line_count;
-    document->capacity = document->undo_capacity;
-
-    document->undo_lines = NULL;
-    document->undo_line_count = 0;
-    document->undo_capacity = 0;
-    document->has_undo = 0;
-
-    free_lines(
-        current_lines,
-        current_line_count
-    );
-
+    doc->undo_lines = NULL;
+    doc->undo_line_count = doc->undo_capacity = doc->has_undo = 0;
+    free_lines(curr_lines, curr_count);
     return 0;
 }
 
+int insert_line(Document *doc, const char *text) {
+    if (!text || text[0] == '\0') return -1;
+    if (doc->line_count >= doc->capacity && increase_capacity(doc) != 0) return -1;
 
-/* =========================================================
-   INSERT LINE
-   ========================================================= */
-
-int insert_line(
-    Document *document,
-    const char *text
-)
-{
-    char *new_line;
-    size_t length;
-
-    if (text == NULL || text[0] == '\0') {
-        return -1;
-    }
-
-    if (document->line_count >= document->capacity) {
-
-        if (increase_capacity(document) != 0) {
-            return -1;
-        }
-    }
-
-    length = strlen(text);
-
-    new_line = malloc(length + 1);
-
-    if (new_line == NULL) {
-        return -1;
-    }
-
+    char *new_line = malloc(strlen(text) + 1);
+    if (!new_line) return -1;
     strcpy(new_line, text);
 
-    document->lines[
-        document->line_count
-    ] = new_line;
-
-    document->line_count++;
-
+    doc->lines[doc->line_count++] = new_line;
     return 0;
 }
 
+int delete_line(Document *doc, int line_number) {
+    if (line_number < 0 || line_number >= doc->line_count) return -1;
+    free(doc->lines[line_number]);
 
-/* =========================================================
-   DELETE LINE
-   ========================================================= */
-
-int delete_line(
-    Document *document,
-    int line_number
-)
-{
-    int i;
-
-    if (line_number < 0 ||
-        line_number >= document->line_count) {
-
-        return -1;
+    for (int i = line_number; i < doc->line_count - 1; i++) {
+        doc->lines[i] = doc->lines[i + 1];
     }
-
-    free(
-        document->lines[line_number]
-    );
-
-    for (i = line_number;
-         i < document->line_count - 1;
-         i++) {
-
-        document->lines[i] =
-            document->lines[i + 1];
-    }
-
-    document->line_count--;
-
-    document->lines[
-        document->line_count
-    ] = NULL;
-
+    doc->lines[--doc->line_count] = NULL;
     return 0;
 }
 
-
-/* =========================================================
-   DISPLAY DOCUMENT
-   ========================================================= */
-
-void display_document(
-    const Document *document
-)
-{
-    int i;
-
-    if (document->line_count == 0) {
-
+void display_document(const Document *doc) {
+    if (doc->line_count == 0) {
         printf("\nDocument is empty.\n\n");
-
         return;
     }
-
-    printf("\n");
-    printf("====================================\n");
-    printf("           DOCUMENT\n");
-    printf("====================================\n\n");
-
-    for (i = 0;
-         i < document->line_count;
-         i++) {
-
-        printf(
-            "%d | %s\n",
-            i,
-            document->lines[i]
-        );
-    }
-
+    printf("\n====================================\n           DOCUMENT\n====================================\n\n");
+    for (int i = 0; i < doc->line_count; i++) printf("%d | %s\n", i, doc->lines[i]);
     printf("\n");
 }
 
-
-/* =========================================================
-   SEARCH
-   ========================================================= */
-
-int search_document(
-    const Document *document,
-    const char *query
-)
-{
-    int i;
+int search_document(const Document *doc, const char *query) {
+    if (!query || query[0] == '\0') return -1;
     int found = 0;
-
-    if (query == NULL ||
-        query[0] == '\0') {
-
-        return -1;
-    }
-
-    for (i = 0;
-         i < document->line_count;
-         i++) {
-
-        if (strstr(
-                document->lines[i],
-                query
-            ) != NULL) {
-
-            printf(
-                "Found \"%s\" on line %d.\n",
-                query,
-                i
-            );
-
+    for (int i = 0; i < doc->line_count; i++) {
+        if (strstr(doc->lines[i], query)) {
+            printf("Found \"%s\" on line %d.\n", query, i);
             found = 1;
         }
     }
-
     return found;
 }
 
-
-/* =========================================================
-   REPLACE TEXT INSIDE ONE LINE
-   ========================================================= */
-
-static int replace_in_line(
-    char **line,
-    const char *find,
-    const char *replace
-)
-{
-    char *position;
-    char *result;
-    char *source;
-    char *destination;
-
-    size_t find_length;
-    size_t replace_length;
-    size_t original_length;
-    size_t new_length;
-    size_t part_length;
+static int replace_in_line(char **line, const char *find, const char *replace) {
+    if (!line || !*line || !find || !replace) return -1;
+    size_t f_len = strlen(find), r_len = strlen(replace);
+    if (f_len == 0) return 0;
 
     int count = 0;
+    char *pos = *line;
+    while ((pos = strstr(pos, find)) != NULL) { count++; pos += f_len; }
+    if (count == 0) return 0;
 
+    size_t orig_len = strlen(*line);
+    size_t new_len = orig_len + count * (r_len - f_len);
+    if (new_len >= MAX_LINE_LENGTH) return -1;
 
-    if (line == NULL ||
-        *line == NULL ||
-        find == NULL ||
-        replace == NULL) {
+    char *result = malloc(new_len + 1);
+    if (!result) return -1;
 
-        return -1;
+    char *src = *line, *dst = result;
+    while ((pos = strstr(src, find)) != NULL) {
+        size_t part = pos - src;
+        memcpy(dst, src, part); dst += part;
+        memcpy(dst, replace, r_len); dst += r_len;
+        src = pos + f_len;
     }
-
-
-    find_length = strlen(find);
-    replace_length = strlen(replace);
-    original_length = strlen(*line);
-
-
-    if (find_length == 0) {
-        return 0;
-    }
-
-
-    /*
-     * Count occurrences.
-     */
-    position = *line;
-
-    while ((position = strstr(
-                position,
-                find
-            )) != NULL) {
-
-        count++;
-
-        position += find_length;
-    }
-
-
-    if (count == 0) {
-        return 0;
-    }
-
-
-    /*
-     * Check maximum line length.
-     */
-    if (replace_length >= find_length) {
-
-        size_t increase =
-            replace_length - find_length;
-
-        if (increase != 0 &&
-            (size_t)count >
-                (SIZE_MAX - original_length) /
-                increase) {
-
-            return -1;
-        }
-
-        new_length =
-            original_length +
-            increase * (size_t)count;
-
-    } else {
-
-        size_t decrease =
-            find_length - replace_length;
-
-        new_length =
-            original_length -
-            decrease * (size_t)count;
-    }
-
-
-    if (new_length >= MAX_LINE_LENGTH) {
-        return -1;
-    }
-
-
-    result = malloc(
-        new_length + 1
-    );
-
-    if (result == NULL) {
-        return -1;
-    }
-
-
-    /*
-     * Build the new string.
-     */
-    source = *line;
-    destination = result;
-
-
-    while ((position = strstr(
-                source,
-                find
-            )) != NULL) {
-
-        part_length =
-            (size_t)(position - source);
-
-
-        memcpy(
-            destination,
-            source,
-            part_length
-        );
-
-        destination += part_length;
-
-
-        memcpy(
-            destination,
-            replace,
-            replace_length
-        );
-
-        destination += replace_length;
-
-
-        source =
-            position + find_length;
-    }
-
-
-    /*
-     * Copy remaining text.
-     */
-    strcpy(
-        destination,
-        source
-    );
-
-
-    /*
-     * Replace old string.
-     */
+    strcpy(dst, src);
     free(*line);
-
     *line = result;
-
-
     return count;
 }
 
+int find_and_replace(Document *doc) {
+    char find[MAX_LINE_LENGTH], replace[MAX_LINE_LENGTH], input[MAX_LINE_LENGTH];
+    int choice, line_number, matches = 0, total_reps = 0;
 
-/* =========================================================
-   FIND AND REPLACE
-   ========================================================= */
-
-int find_and_replace(
-    Document *document
-)
-{
-    char find[MAX_LINE_LENGTH];
-    char replace[MAX_LINE_LENGTH];
-    char input[MAX_LINE_LENGTH];
-
-    int matching_count = 0;
-    int i;
-    int choice;
-    int line_number;
-    int total_replacements = 0;
-
-
-    printf("\n====================================\n");
-    printf("          FIND AND REPLACE\n");
-    printf("====================================\n\n");
-
-
-    /*
-     * Ask what the user wants to find.
-     */
-    printf(
-        "Enter word or phrase to find:\n"
-    );
-
-    printf("> ");
-
-
-    if (fgets(
-            find,
-            sizeof(find),
-            stdin
-        ) == NULL) {
-
-        return -1;
-    }
-
-
+    printf("\n====================================\n          FIND AND REPLACE\n====================================\n\n");
+    printf("Enter word or phrase to find:\n> ");
+    if (!fgets(find, sizeof(find), stdin)) return -1;
     remove_newline(find);
 
-
     if (find[0] == '\0') {
-
-        printf(
-            "Search text cannot be empty.\n"
-        );
-
+        printf("Search text cannot be empty.\n");
         return -1;
     }
 
-
-    /*
-     * Search the entire document.
-     */
-    printf(
-        "\nSearching for \"%s\"...\n\n",
-        find
-    );
-
-
-    for (i = 0;
-         i < document->line_count;
-         i++) {
-
-        if (strstr(
-                document->lines[i],
-                find
-            ) != NULL) {
-
-            matching_count++;
-
-            printf(
-                "Line %d: %s\n",
-                i,
-                document->lines[i]
-            );
+    printf("\nSearching for \"%s\"...\n\n", find);
+    for (int i = 0; i < doc->line_count; i++) {
+        if (strstr(doc->lines[i], find)) {
+            matches++;
+            printf("Line %d: %s\n", i, doc->lines[i]);
         }
     }
 
-
-    /*
-     * No matches.
-     */
-    if (matching_count == 0) {
-
-        printf(
-            "No matches found for \"%s\".\n\n",
-            find
-        );
-
+    if (matches == 0) {
+        printf("No matches found for \"%s\".\n\n", find);
         return 0;
     }
 
-
-    /*
-     * Give user options.
-     */
-    printf(
-        "\nWhat would you like to do?\n\n"
-    );
-
-    printf(
-        "1. Replace on one line\n"
-    );
-
-    printf(
-        "2. Replace all\n"
-    );
-
-    printf(
-        "3. Cancel\n\n"
-    );
-
-    printf("> ");
-
-
-    if (fgets(
-            input,
-            sizeof(input),
-            stdin
-        ) == NULL) {
-
+    printf("\nWhat would you like to do?\n1. Replace on one line\n2. Replace all\n3. Cancel\n\n> ");
+    if (!fgets(input, sizeof(input), stdin) || sscanf(input, "%d", &choice) != 1 || (choice < 1 || choice > 3)) {
+        printf("Invalid choice.\n");
         return -1;
     }
-
-
-    if (sscanf(
-            input,
-            "%d",
-            &choice
-        ) != 1) {
-
-        printf(
-            "Invalid choice.\n"
-        );
-
-        return -1;
-    }
-
-
     if (choice == 3) {
-
-        printf(
-            "Find and replace cancelled.\n\n"
-        );
-
+        printf("Find and replace cancelled.\n\n");
         return 0;
     }
 
-
-    if (choice != 1 &&
-        choice != 2) {
-
-        printf(
-            "Invalid choice.\n\n"
-        );
-
-        return -1;
-    }
-
-
-    /*
-     * Replace on one specific line.
-     */
     if (choice == 1) {
-
-        printf(
-            "\nEnter line number to replace:\n"
-        );
-
-        printf("> ");
-
-
-        if (fgets(
-                input,
-                sizeof(input),
-                stdin
-            ) == NULL) {
-
-            return -1;
-        }
-
-
-        if (sscanf(
-                input,
-                "%d",
-                &line_number
-            ) != 1) {
-
-            printf(
-                "Invalid line number.\n"
-            );
-
-            return -1;
-        }
-
-
-        if (line_number < 0 ||
-            line_number >= document->line_count) {
-
-            printf(
-                "Invalid line number.\n"
-            );
-
-            return -1;
-        }
-
-
-        /*
-         * Make sure search text exists.
-         */
-        if (strstr(
-                document->lines[line_number],
-                find
-            ) == NULL) {
-
-            printf(
-                "The word \"%s\" was not found "
-                "on line %d.\n",
-                find,
-                line_number
-            );
-
+        printf("\nEnter line number to replace:\n> ");
+        if (!fgets(input, sizeof(input), stdin) || sscanf(input, "%d", &line_number) != 1 || line_number < 0 || line_number >= doc->line_count || !strstr(doc->lines[line_number], find)) {
+            printf("Invalid line number or word not found on line.\n");
             return -1;
         }
     }
 
-
-    /*
-     * Ask for replacement text.
-     */
-    printf(
-        "\nEnter replacement text:\n"
-    );
-
-    printf("> ");
-
-
-    if (fgets(
-            replace,
-            sizeof(replace),
-            stdin
-        ) == NULL) {
-
-        return -1;
-    }
-
-
+    printf("\nEnter replacement text:\n> ");
+    if (!fgets(replace, sizeof(replace), stdin)) return -1;
     remove_newline(replace);
 
-
-    /*
-     * Replace on one line.
-     */
     if (choice == 1) {
-
-        int result;
-
-
-        result = replace_in_line(
-            &document->lines[line_number],
-            find,
-            replace
-        );
-
-
-        if (result > 0) {
-
-            printf(
-                "\nLine %d updated successfully.\n\n",
-                line_number
-            );
-
+        if (replace_in_line(&doc->lines[line_number], find, replace) > 0) {
+            printf("\nLine %d updated successfully.\n\n", line_number);
             return 1;
+        }
+        printf("\nError replacing text.\n\n");
+        return -1;
+    }
 
-        } else {
-
-            printf(
-                "\nError replacing text.\n\n"
-            );
-
-            return -1;
+    for (int i = 0; i < doc->line_count; i++) {
+        if (strstr(doc->lines[i], find)) {
+            int res = replace_in_line(&doc->lines[i], find, replace);
+            if (res > 0) total_reps += res;
         }
     }
-
-
-    /*
-     * Replace across the whole document.
-     */
-    for (i = 0;
-         i < document->line_count;
-         i++) {
-
-        int result;
-
-
-        if (strstr(
-                document->lines[i],
-                find
-            ) != NULL) {
-
-            result = replace_in_line(
-                &document->lines[i],
-                find,
-                replace
-            );
-
-
-            if (result > 0) {
-
-                total_replacements +=
-                    result;
-            }
-        }
-    }
-
-
-    printf(
-        "\n%d occurrence(s) replaced successfully.\n\n",
-        total_replacements
-    );
-
-
-    if (total_replacements > 0) {
-        return 1;
-    }
-
-    return 0;
+    printf("\n%d occurrence(s) replaced successfully.\n\n", total_reps);
+    return total_reps > 0 ? 1 : 0;
 }
 
-
-/* =========================================================
-   DOCUMENT STATISTICS
-   ========================================================= */
-
-void show_statistics(
-    const Document *document
-)
-{
-    int i;
+void show_statistics(const Document *doc) {
     int word_count = 0;
-
-
-    for (i = 0;
-         i < document->line_count;
-         i++) {
-
-        const char *text =
-            document->lines[i];
-
+    for (int i = 0; i < doc->line_count; i++) {
+        const char *text = doc->lines[i];
         int in_word = 0;
-
-
-        while (*text != '\0') {
-
-            /*
-             * Spaces and tabs separate words.
-             */
-            if (*text == ' ' ||
-                *text == '\t') {
-
-                in_word = 0;
-            }
-
-            /*
-             * Start of a new word.
-             */
-            else if (in_word == 0) {
-
-                word_count++;
-                in_word = 1;
-            }
-
+        while (*text) {
+            if (isspace((unsigned char)*text)) in_word = 0;
+            else if (!in_word) { word_count++; in_word = 1; }
             text++;
         }
     }
-
-
-    printf("\n====================================\n");
-    printf("         DOCUMENT STATISTICS\n");
-    printf("====================================\n\n");
-
-    printf(
-        "Lines : %d\n",
-        document->line_count
-    );
-
-    printf(
-        "Words : %d\n\n",
-        word_count
-    );
+    printf("\n====================================\n         DOCUMENT STATISTICS\n====================================\n\n");
+    printf("Lines : %d\nWords : %d\n\n", doc->line_count, word_count);
 }
 
+int create_new_file(Document *doc, const char *filename) {
+    if (!doc || !filename || filename[0] == '\0') return -1;
+    FILE *file = fopen(filename, "r");
+    if (file) { fclose(file); return 1; } // File exists
 
-/* =========================================================
-   CREATE NEW FILE
-   ========================================================= */
+    file = fopen(filename, "w");
+    if (!file || fclose(file) != 0) return -1;
 
-int create_new_file(
-    Document *document,
-    const char *filename
-)
-{
-    FILE *file;
-
-
-    if (document == NULL ||
-        filename == NULL ||
-        filename[0] == '\0') {
-
-        return -1;
-    }
-
-
-    /*
-     * Check whether file already exists.
-     */
-    file = fopen(
-        filename,
-        "r"
-    );
-
-
-    if (file != NULL) {
-
-        fclose(file);
-
-        return 1;
-    }
-
-
-    /*
-     * Create a new empty file.
-     */
-    file = fopen(
-        filename,
-        "w"
-    );
-
-
-    if (file == NULL) {
-        return -1;
-    }
-
-
-    if (fclose(file) != 0) {
-        return -1;
-    }
-
-
-    strncpy(
-        document->filename,
-        filename,
-        MAX_FILENAME_LENGTH - 1
-    );
-
-
-    document->filename[
-        MAX_FILENAME_LENGTH - 1
-    ] = '\0';
-
-
-    /*
-     * New file starts empty.
-     */
-    clear_undo_state(document);
-
-
+    strncpy(doc->filename, filename, MAX_FILENAME_LENGTH - 1);
+    doc->filename[MAX_FILENAME_LENGTH - 1] = '\0';
+    clear_undo_state(doc);
     return 0;
 }
 
+int load_file(Document *doc, const char *filename) {
+    FILE *file = fopen(filename, "r");
+    if (!file) return -1;
 
-/* =========================================================
-   LOAD FILE
-   ========================================================= */
+    int new_cap = INITIAL_CAPACITY, new_count = 0;
+    char **new_lines = malloc(sizeof(char *) * new_cap);
+    if (!new_lines) { fclose(file); return -1; }
 
-int load_file(
-    Document *document,
-    const char *filename
-)
-{
-    FILE *file;
     char buffer[MAX_LINE_LENGTH];
-
-    char **new_lines;
-    int new_capacity;
-    int new_count = 0;
-    int i;
-
-
-    file = fopen(
-        filename,
-        "r"
-    );
-
-
-    if (file == NULL) {
-        return -1;
-    }
-
-
-    new_capacity = INITIAL_CAPACITY;
-
-
-    new_lines = malloc(
-        sizeof(char *) * new_capacity
-    );
-
-
-    if (new_lines == NULL) {
-
-        fclose(file);
-
-        return -1;
-    }
-
-
-    while (fgets(
-               buffer,
-               sizeof(buffer),
-               file
-           ) != NULL) {
-
-        char *new_line;
-        size_t length;
-
-
+    while (fgets(buffer, sizeof(buffer), file)) {
         remove_newline(buffer);
-
-
-        if (new_count >= new_capacity) {
-
-            char **temporary;
-
-            new_capacity *= 2;
-
-            temporary = realloc(
-                new_lines,
-                sizeof(char *) * new_capacity
-            );
-
-
-            if (temporary == NULL) {
-
-                fclose(file);
-
-                free_lines(
-                    new_lines,
-                    new_count
-                );
-
-                return -1;
-            }
-
-
-            new_lines = temporary;
+        if (new_count >= new_cap) {
+            new_cap *= 2;
+            char **temp = realloc(new_lines, sizeof(char *) * new_cap);
+            if (!temp) { fclose(file); free_lines(new_lines, new_count); return -1; }
+            new_lines = temp;
         }
-
-
-        length = strlen(buffer);
-
-
-        new_line = malloc(
-            length + 1
-        );
-
-
-        if (new_line == NULL) {
-
-            fclose(file);
-
-            free_lines(
-                new_lines,
-                new_count
-            );
-
-            return -1;
-        }
-
-
-        strcpy(
-            new_line,
-            buffer
-        );
-
-
-        new_lines[new_count] =
-            new_line;
-
-        new_count++;
+        new_lines[new_count] = malloc(strlen(buffer) + 1);
+        if (!new_lines[new_count]) { fclose(file); free_lines(new_lines, new_count); return -1; }
+        strcpy(new_lines[new_count++], buffer);
     }
-
-
     fclose(file);
 
+    free_lines(doc->lines, doc->line_count);
+    doc->lines = new_lines;
+    doc->line_count = new_count;
+    doc->capacity = new_cap;
+    strncpy(doc->filename, filename, MAX_FILENAME_LENGTH - 1);
+    doc->filename[MAX_FILENAME_LENGTH - 1] = '\0';
+    clear_undo_state(doc);
 
-    /*
-     * Replace old document.
-     */
-    free_lines(
-        document->lines,
-        document->line_count
-    );
-
-
-    document->lines = new_lines;
-    document->line_count = new_count;
-    document->capacity = new_capacity;
-
-
-    strncpy(
-        document->filename,
-        filename,
-        MAX_FILENAME_LENGTH - 1
-    );
-
-
-    document->filename[
-        MAX_FILENAME_LENGTH - 1
-    ] = '\0';
-
-
-    /*
-     * Loading a file starts a new undo history.
-     */
-    clear_undo_state(document);
-
-
-    /*
-     * Clear unused pointers.
-     */
-    for (i = new_count;
-         i < new_capacity;
-         i++) {
-
-        document->lines[i] = NULL;
-    }
-
-
+    for (int i = new_count; i < new_cap; i++) doc->lines[i] = NULL;
     return 0;
 }
 
+int save_file(const Document *doc) {
+    if (doc->filename[0] == '\0') return -1;
+    FILE *file = fopen(doc->filename, "w");
+    if (!file) return -1;
 
-/* =========================================================
-   SAVE FILE
-   ========================================================= */
-
-int save_file(
-    const Document *document
-)
-{
-    FILE *file;
-    int i;
-
-
-    if (document->filename[0] == '\0') {
-        return -1;
+    for (int i = 0; i < doc->line_count; i++) {
+        if (fprintf(file, "%s\n", doc->lines[i]) < 0) { fclose(file); return -1; }
     }
-
-
-    file = fopen(
-        document->filename,
-        "w"
-    );
-
-
-    if (file == NULL) {
-        return -1;
-    }
-
-
-    for (i = 0;
-         i < document->line_count;
-         i++) {
-
-        if (fprintf(
-                file,
-                "%s\n",
-                document->lines[i]
-            ) < 0) {
-
-            fclose(file);
-
-            return -1;
-        }
-    }
-
-
-    if (fclose(file) != 0) {
-        return -1;
-    }
-
-
-    return 0;
+    return fclose(file) == 0 ? 0 : -1;
 }
 
-
-/* =========================================================
-   EXIT / CLEANUP
-   ========================================================= */
-
-void exit_editor(
-    Document *document
-)
-{
-    free_lines(
-        document->lines,
-        document->line_count
-    );
-
-
-    clear_undo_state(document);
-
-
-    document->lines = NULL;
-    document->line_count = 0;
-    document->capacity = 0;
-    document->filename[0] = '\0';
+void exit_editor(Document *doc) {
+    free_lines(doc->lines, doc->line_count);
+    clear_undo_state(doc);
+    doc->lines = NULL;
+    doc->line_count = doc->capacity = 0;
+    doc->filename[0] = '\0';
 }
