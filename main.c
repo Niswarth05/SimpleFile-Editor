@@ -105,6 +105,6 @@ int main(void) {
     }
 
     exit_editor(&document);
-    printf("\nExiting editor...\n");
+    printf("\nExiting editor...\n"); //exit sequence
     return 0;
 }
